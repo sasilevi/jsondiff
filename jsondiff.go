@@ -74,12 +74,55 @@ func DefaultHTMLOptions() Options {
 	}
 }
 
+type DiffMap struct {
+	diff map[string][]string
+}
+
+func (d *DiffMap) GetAdded() []string {
+	if v, ok := d.diff["Added"]; ok {
+		return v
+	}
+	return make([]string, 0)
+}
+
+func (d *DiffMap) Added(v string) {
+	d.diff["Added"] = append(d.diff["Added"], v)
+}
+
+func (d *DiffMap) Removed(v string) {
+	d.diff["Removed"] = append(d.diff["Removed"], v)
+}
+
+func (d *DiffMap) Changed(v string) {
+	d.diff["Changed"] = append(d.diff["Changed"], v)
+}
+
+func (d *DiffMap) GetRemoved() []string {
+	if v, ok := d.diff["Removed"]; ok {
+		return v
+	}
+	return make([]string, 0)
+}
+
+func (d *DiffMap) GetChanged() []string {
+	if v, ok := d.diff["Changed"]; ok {
+		return v
+	}
+	return make([]string, 0)
+}
+func NewDiffMap() DiffMap {
+	d := DiffMap{diff: make(map[string][]string)}
+	return d
+}
+
 type context struct {
-	opts    *Options
-	buf     bytes.Buffer
-	level   int
-	lastTag *Tag
-	diff    Difference
+	opts      *Options
+	buf       bytes.Buffer
+	level     int
+	lastTag   *Tag
+	diff      Difference
+	diffMap   DiffMap
+	keyString string
 }
 
 func (ctx *context) newline(s string) {
@@ -98,6 +141,7 @@ func (ctx *context) newline(s string) {
 }
 
 func (ctx *context) key(k string) {
+	ctx.keyString = k
 	ctx.buf.WriteString(strconv.Quote(k))
 	ctx.buf.WriteString(": ")
 }
@@ -189,6 +233,7 @@ func (ctx *context) writeType(v interface{}) {
 func (ctx *context) writeMismatch(a, b interface{}) {
 	ctx.writeValue(a, false)
 	ctx.buf.WriteString(" => ")
+	// ctx.diffMap[a.(string)] = b.(string)
 	ctx.writeValue(b, false)
 }
 
@@ -214,6 +259,7 @@ func (ctx *context) result(d Difference) {
 
 func (ctx *context) printMismatch(a, b interface{}) {
 	ctx.tag(&ctx.opts.Changed)
+	ctx.diffMap.Changed(ctx.keyString)
 	ctx.writeMismatch(a, b)
 }
 
@@ -224,6 +270,7 @@ func (ctx *context) printDiff(a, b interface{}) {
 			ctx.writeValue(a, false)
 			ctx.result(FullMatch)
 		} else {
+			ctx.diffMap.Changed(ctx.keyString)
 			ctx.printMismatch(a, b)
 			ctx.result(NoMatch)
 		}
@@ -279,10 +326,12 @@ func (ctx *context) printDiff(a, b interface{}) {
 			if i < salen && i < sblen {
 				ctx.printDiff(sa[i], sb[i])
 			} else if i < salen {
+				ctx.diffMap.Removed(sa[i].(string))
 				ctx.tag(&ctx.opts.Removed)
 				ctx.writeValue(sa[i], true)
 				ctx.result(SupersetMatch)
 			} else if i < sblen {
+				ctx.diffMap.Added(sb[i].(string))
 				ctx.tag(&ctx.opts.Added)
 				ctx.writeValue(sb[i], true)
 				ctx.result(NoMatch)
@@ -326,11 +375,13 @@ func (ctx *context) printDiff(a, b interface{}) {
 				ctx.key(k)
 				ctx.printDiff(va, vb)
 			} else if aok {
+				ctx.diffMap.Removed(k)
 				ctx.tag(&ctx.opts.Removed)
 				ctx.key(k)
 				ctx.writeValue(va, true)
 				ctx.result(SupersetMatch)
 			} else if bok {
+				ctx.diffMap.Added(k)
 				ctx.tag(&ctx.opts.Added)
 				ctx.key(k)
 				ctx.writeValue(vb, true)
@@ -378,7 +429,8 @@ func (ctx *context) printDiff(a, b interface{}) {
 // human-readable difference between provided JSON documents. It is important
 // to understand that returned format is not a valid JSON and is not meant
 // to be machine readable.
-func Compare(a, b []byte, opts *Options) (Difference, string) {
+func Compare(a, b []byte, opts *Options) (Difference, string, DiffMap) {
+
 	var av, bv interface{}
 	da := json.NewDecoder(bytes.NewReader(a))
 	da.UseNumber()
@@ -387,19 +439,21 @@ func Compare(a, b []byte, opts *Options) (Difference, string) {
 	errA := da.Decode(&av)
 	errB := db.Decode(&bv)
 	if errA != nil && errB != nil {
-		return BothArgsAreInvalidJson, "both arguments are invalid json"
+		return BothArgsAreInvalidJson, "both arguments are invalid json", NewDiffMap()
 	}
 	if errA != nil {
-		return FirstArgIsInvalidJson, "first argument is invalid json"
+		return FirstArgIsInvalidJson, "first argument is invalid json", NewDiffMap()
 	}
 	if errB != nil {
-		return SecondArgIsInvalidJson, "second argument is invalid json"
+		return SecondArgIsInvalidJson, "second argument is invalid json", NewDiffMap()
 	}
 
-	ctx := context{opts: opts}
+	ctx := context{opts: opts,
+		diffMap: NewDiffMap()}
+
 	ctx.printDiff(av, bv)
 	if ctx.lastTag != nil {
 		ctx.buf.WriteString(ctx.lastTag.End)
 	}
-	return ctx.diff, ctx.buf.String()
+	return ctx.diff, ctx.buf.String(), ctx.diffMap
 }
